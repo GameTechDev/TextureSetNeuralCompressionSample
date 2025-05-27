@@ -1,0 +1,112 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVs
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define VISIBILITY_BUFFER_BINDING t0
+#define VERTEX_DATA_BUFFER_BINDING t1
+#define INDEX_BUFFER_BINDING t2
+#define SCENE_RTAS_BINDING t3
+
+// UAVs
+#define SHADOW_TEXTURE_BINDING u0
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/random.hlsl"
+#include "shader_lib/transform.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+#include "shader_lib/visibility_utilities.hlsl"
+#include "shader_lib/intersection.hlsl"
+
+// SRVs
+Texture2D<uint> _VisibilityBuffer: register(VISIBILITY_BUFFER_BINDING);
+RaytracingAccelerationStructure _SceneRTAS : register(SCENE_RTAS_BINDING);
+
+// UAV
+RWTexture2D<float> _ShadowTextureRW: register(SHADOW_TEXTURE_BINDING);
+
+[numthreads(8, 4, 1)]
+void main(uint2 pixelCoords : SV_DispatchThreadID)
+{
+    // Unpack the vibilisty buffer
+    uint visibilityData = _VisibilityBuffer.Load(int3(pixelCoords.xy, 0));
+
+    // Ray description
+    RayDesc ray;
+    ray.TMin = 0.01;
+    ray.TMax = 100.0f;
+    ray.Direction = _SunDirection;
+    bool validRay = false;
+
+    // Check the validity of the pixel
+    int32_t primitiveID;
+    if (unpack_visibility_buffer(visibilityData, primitiveID))
+    {
+        // Get our seed
+        uint32_t seed = pixel_seed(pixelCoords.xy, _ScreenSize.xy, 0);
+
+        // Read the vertex data and interpolate
+        uint3 indices = primitive_indices(primitiveID);
+        VertexData v0 = _VertexBuffer[indices.x];  
+        VertexData v1 = _VertexBuffer[indices.y];
+        VertexData v2 = _VertexBuffer[indices.z];
+
+        // Evaluate the barycentrics
+        BarycentricDeriv baryDeriv = evaluate_barycentrics(position(v0), position(v1), position(v2), pixelCoords);
+
+        // Fill the ray
+        float3 normalWS = normal(v0) * baryDeriv.bary.x + normal(v1) * baryDeriv.bary.y + normal(v2) * baryDeriv.bary.z;
+        ray.Origin = position(v0) * baryDeriv.bary.x + position(v1) * baryDeriv.bary.y + position(v2) * baryDeriv.bary.z + normalWS * URng(seed) * 0.02;
+        validRay = true;
+    }
+    else
+    {
+        // Build the a world direction
+        float2 positionNDC = (pixelCoords.xy + float2(0.5, 0.5))/ _ScreenSize.xy;
+        positionNDC.y = 1.0 - positionNDC.y;
+        float3 depthBufferPosition = evaluate_world_space_position(positionNDC, 1.0, _InvViewProjectionMatrix);
+
+        // Compute the world direction and world position
+        float3 rayDir = normalize(depthBufferPosition);
+
+        // Intersect the disk
+        float t = intersect_plane(_CameraPosition, rayDir, float3(0.0, 1.0, 0.0));
+
+        // Are we inside the disk
+        float3 virtualPos = _CameraPosition + rayDir * t;
+        if (t > 0.0 && length(virtualPos) < 4.0)
+        {
+            // Ray description
+            ray.Origin = virtualPos;
+            validRay = true;
+        }
+    }
+
+    // Cast our ray query
+    float shadow = 1.0f;
+    if (validRay)
+    {
+        // Initialize the query
+        RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+
+        // Set up a trace.  No work is done yet.
+        query.TraceRayInline(_SceneRTAS,  RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xff, ray);
+
+        // Run the traversal
+        query.Proceed();
+
+        // Shadow term
+        shadow = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0f : 1.0f;
+    }
+   
+    // Write the color to the 2D texture
+    _ShadowTextureRW[pixelCoords.xy] = shadow;
+}

@@ -1,0 +1,53 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVs
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define SKINNED_VERTEX_BUFFER_BINDING_SLOT t0
+
+// UAVs
+#define DISPLACEMENT_BUFFER_BINDING_SLOT u0
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+
+// SRVs
+StructuredBuffer<VertexData> _SkinnedVertexBuffer: register(SKINNED_VERTEX_BUFFER_BINDING_SLOT);
+
+// UAVs
+RWStructuredBuffer<float> _DisplacementBuffer: register(DISPLACEMENT_BUFFER_BINDING_SLOT);
+
+#define LEFT_LEG_INDEX 11529
+#define RIGHT_LEG_INDEX 11607
+
+// Workgroup size
+[numthreads(1, 1, 1)]
+void main(uint tid : SV_DispatchThreadID)
+{
+    // Grab the vertex we want
+    uint32_t vertexIndex = _AnimationTime > 0.50 ? LEFT_LEG_INDEX : RIGHT_LEG_INDEX;
+    VertexData vertexData = _SkinnedVertexBuffer[vertexIndex];
+
+    // Get it's old and new position
+    float3 oldPosition = float3(_DisplacementBuffer[0], _DisplacementBuffer[1], _DisplacementBuffer[2]);
+    float3 newPosition = position(vertexData);
+
+    // Update the new position
+    _DisplacementBuffer[0] = newPosition.x;
+    _DisplacementBuffer[1] = newPosition.y;
+    _DisplacementBuffer[2] = newPosition.z;
+
+    // Evaluate the displacement vector
+    float3 movement = oldPosition - position(vertexData);
+
+    // Update the displacement
+    _DisplacementBuffer[3] = _DisplacementBuffer[3] + max(movement.z, 0);
+}

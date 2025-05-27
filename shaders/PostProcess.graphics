@@ -1,0 +1,91 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVs
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define COLOR_TEXTURE_IN_BINDING_SLOT t0
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/color.hlsl"
+
+// SRVs
+Texture2D<float4> _ColorTextureIn: register(COLOR_TEXTURE_IN_BINDING_SLOT);
+
+struct VertexInput
+{
+    uint instanceID : SV_InstanceID;
+    uint vertexID : SV_VertexID;
+};
+
+struct VertexOutput
+{
+    float4 positionCS : SV_POSITION;
+};
+
+VertexOutput vert(VertexInput input)
+{
+    VertexOutput output;
+    output.positionCS = vertex_id_to_cs_pos(input.vertexID);
+    return output;
+}
+
+struct PixelInput
+{
+    float4 positionCS : SV_POSITION;
+};
+
+float4 frag(PixelInput input) : SV_Target0
+{
+    // Run the post process if required
+    float3 color = float3(0.0, 0.0, 0.0);
+    if (_EnablePP > 0.0)
+    {
+        // Evaluate UVs
+        float2 uv = input.positionCS.xy / float2(_ScreenSize.xy);
+
+        // Chromatic abberation
+        {
+            float2 coords = 2.0 * uv - 1.0;
+            float2 end = uv - coords * dot(coords, coords) * 0.3f;
+            float2 diff = end - uv;
+            int samples = clamp(int(length(diff / 2.0)), 3, 8);
+            float2 delta = diff / samples * 0.03;
+            float2 pos = uv;
+            float3 sum = float3(0.0, 0.0, 0.0), filterSum = float3(0.0, 0.0, 0.0);
+            for (int i = 0; i < samples; i++)
+            {
+                float t = (i + 0.5) / samples;
+                float3 s = _ColorTextureIn.Load(int3(pos * _ScreenSize.xy, 0.0)).xyz;
+
+                float3 chro = chroma_color(t);
+
+                sum += s * chro;
+                filterSum += chro;
+                pos += delta;
+            }
+            color = sum / filterSum;
+        }
+
+        // Exposure
+        color *= FIXED_EXPOSURE;
+
+        // Tonemap
+        color = color / (1.0 + color);
+
+        // Gamma
+        color = pow(color,  FINAL_GAMMA);
+    }
+    else
+        color = _ColorTextureIn.Load(int3(input.positionCS.xy, 0.0)).xyz;
+
+    // Saturate and return
+    return float4(saturate(color), 1.0);
+}

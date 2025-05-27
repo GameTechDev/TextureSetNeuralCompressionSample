@@ -1,0 +1,50 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVs
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define VERTEX_BUFFER_A_BINDING_SLOT t0
+#define VERTEX_BUFFER_B_BINDING_SLOT t1
+
+// UAVs
+#define VERTEX_BUFFER_O_BINDING_SLOT u0
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+
+// SRVs
+StructuredBuffer<VertexData> _VertexBufferA: register(VERTEX_BUFFER_A_BINDING_SLOT);
+StructuredBuffer<VertexData> _VertexBufferB: register(VERTEX_BUFFER_B_BINDING_SLOT);
+
+// UAVs
+RWStructuredBuffer<VertexData> _VertexBufferRW: register(VERTEX_BUFFER_O_BINDING_SLOT);
+
+// Workgroup size
+[numthreads(WORK_GROUP_SIZE, 1, 1)]
+void main(uint tid : SV_DispatchThreadID)
+{
+    if (tid >= _MeshNumVerts)
+        return;
+
+    // Pull the vertex data
+    VertexData vertDataA = _VertexBufferA[tid];
+    VertexData vertDataB = _VertexBufferB[tid];
+
+    // Interpolate
+    VertexData interpVertexData;
+    interpVertexData.data0 = lerp(vertDataA.data0, vertDataB.data0, _AnimationFactor);
+    interpVertexData.data1 = lerp(vertDataA.data1, vertDataB.data1, _AnimationFactor);
+    interpVertexData.data2 = lerp(vertDataA.data2, vertDataB.data2, _AnimationFactor);
+    interpVertexData.data2.w = asfloat(0);
+
+    // Output the result
+    _VertexBufferRW[tid] = interpVertexData;
+}

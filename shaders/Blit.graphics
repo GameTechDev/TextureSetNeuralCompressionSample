@@ -1,0 +1,50 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// Includes
+#include "shader_lib/common.hlsl"
+
+// SRVs
+Texture2D<float4> _InputTexture : register(t0);
+
+struct VertexInput
+{
+    uint instanceID : SV_InstanceID;
+    uint vertexID : SV_VertexID;
+};
+
+struct VertexOutput
+{
+    float4 positionCS : SV_POSITION;
+};
+
+VertexOutput vert(VertexInput input)
+{
+    VertexOutput output;
+    output.positionCS = vertex_id_to_cs_pos(input.vertexID);
+    return output;
+}
+
+struct PixelInput
+{
+    float4 positionCS : SV_POSITION;
+};
+
+float4 frag_rgba(PixelInput input) : SV_Target0
+{
+    return _InputTexture.Load(float3(input.positionCS.xy, 0.0));
+}
+
+float frag_r32(PixelInput input) : SV_Target0
+{
+    return _InputTexture.Load(float3(input.positionCS.xy, 0.0)).x;
+}
+
+float2 frag_rg32(PixelInput input) : SV_Target0
+{
+    return _InputTexture.Load(float3(input.positionCS.xy, 0.0)).xy;
+}

@@ -1,0 +1,66 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVs
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define ACTIVE_TILE_BUFFER_BINDING_SLOT t0
+#define UNIFORM_TILE_BUFFER_BINDING_SLOT t1
+#define COMPLEX_TILE_BUFFER_BINDING_SLOT t2
+
+// UAVs
+#define INDIRECT_DISPATCH_BUFFER_BINDING_SLOT u0
+#define MLP_USAGE_BUFFER_BINDING_SLOT u1
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+
+// SRVs
+StructuredBuffer<uint32_t> _ActiveTileBuffer: register(ACTIVE_TILE_BUFFER_BINDING_SLOT);
+StructuredBuffer<uint32_t> _UniformTileBuffer: register(UNIFORM_TILE_BUFFER_BINDING_SLOT);
+StructuredBuffer<uint32_t> _ComplexTileBuffer: register(COMPLEX_TILE_BUFFER_BINDING_SLOT);
+
+// UAVs
+RWStructuredBuffer<uint32_t> _IndirectDispatchBufferRW: register(INDIRECT_DISPATCH_BUFFER_BINDING_SLOT);
+RWStructuredBuffer<uint32_t> _MLPUsageBufferRW: register(MLP_USAGE_BUFFER_BINDING_SLOT);
+
+[numthreads(1, 1, 1)]
+void main()
+{
+    // Number of tiles to dispatch that are considered active
+    _IndirectDispatchBufferRW[0] = _ActiveTileBuffer[0];
+    _IndirectDispatchBufferRW[1] = 1;
+    _IndirectDispatchBufferRW[2] = 1;
+
+	// Number of tiles to dispatch that are considered uniform
+    _IndirectDispatchBufferRW[3] = _UniformTileBuffer[0];
+    _IndirectDispatchBufferRW[4] = 1;
+    _IndirectDispatchBufferRW[5] = 1;
+
+    // Number of tiles to dispatch that are considered complex
+    _IndirectDispatchBufferRW[6] = _ComplexTileBuffer[0];
+    _IndirectDispatchBufferRW[7] = 1;
+    _IndirectDispatchBufferRW[8] = 1;
+
+    // Number of tiles to dispatch that are re-arranged
+    _IndirectDispatchBufferRW[9] = 0;
+    for(uint32_t mlpIdx = 0; mlpIdx < _MLPCount; ++mlpIdx)
+        _IndirectDispatchBufferRW[9] += (_MLPUsageBufferRW[mlpIdx] + WORK_GROUP_SIZE - 1) / WORK_GROUP_SIZE;
+    _IndirectDispatchBufferRW[10] = 1;
+    _IndirectDispatchBufferRW[11] = 1;
+
+    // Tile group offsets
+    _MLPUsageBufferRW[_MLPCount] = 0;
+    for(uint32_t mlpIdx = 1; mlpIdx < _MLPCount; ++mlpIdx)
+        _MLPUsageBufferRW[_MLPCount + mlpIdx] = (_MLPUsageBufferRW[0 + mlpIdx] + WORK_GROUP_SIZE - 1) / WORK_GROUP_SIZE + _MLPUsageBufferRW[_MLPCount + mlpIdx - 1];
+
+    // Individual pixel offsets
+    for(uint32_t mlpIdx = 0; mlpIdx < _MLPCount; ++mlpIdx)
+        _MLPUsageBufferRW[mlpIdx] = 0;
+}

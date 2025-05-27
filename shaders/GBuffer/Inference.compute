@@ -1,0 +1,174 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVs
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define VISIBILITY_BUFFER_BINDING t0
+#define TILE_BUFFER_BINDING t1
+#define VERTEX_DATA_BUFFER_BINDING t2
+#define INDEX_BUFFER_BINDING t3
+#define UV_OFFSET_BUFFER_BINDING t4
+#define WEIGHT_0_BUFFER_BINDING t5
+#define WEIGHT_0_BIAS_BINDING t6
+#define WEIGHT_1_BUFFER_BINDING t7
+#define WEIGHT_1_BIAS_BINDING t8
+#define WEIGHT_2_BUFFER_BINDING t9
+#define WEIGHT_2_BIAS_BINDING t10
+
+// BC1 Compression enabled
+#if defined(LS_BC1_COMPRESSION)
+    #define LS0_BC1_BINDING t11
+    #define LS1_BC1_BINDING t12
+    #define LS2_BC1_BINDING t13
+    #define LS3_BC1_BINDING t14
+    #define BC1_SAMPLER_BINDING s0
+#endif
+
+// UAVs
+#define OUTPUT_BUFFER_BINDING u0
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/inference_utils.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+#include "shader_lib/visibility_utilities.hlsl"
+
+// SRVs
+Texture2D<uint> _VisibilityBuffer: register(VISIBILITY_BUFFER_BINDING);
+StructuredBuffer<uint32_t> _TileBuffer: register(TILE_BUFFER_BINDING);
+
+// UAVs
+#ifdef COOP_VECTOR_SUPPORTED
+RWByteAddressBuffer _OutputBufferRW: register(OUTPUT_BUFFER_BINDING);
+#else
+RWStructuredBuffer<uint4> _OutputBufferRW: register(OUTPUT_BUFFER_BINDING);
+#endif
+
+
+void inference(uint2 inPixelCoords)
+{
+    // Compute the pixel coordinates
+    uint visibilityData = _VisibilityBuffer.Load(int3(inPixelCoords, 0));
+
+    // Check the validity of the pixel
+    uint32_t primitiveID;
+    if (!unpack_visibility_buffer(visibilityData, primitiveID))
+        return;
+
+    // Read the vertex data and interpolate
+    uint3 indices = primitive_indices(primitiveID);
+    VertexData v0 = _VertexBuffer[indices.x];  
+    VertexData v1 = _VertexBuffer[indices.y];
+    VertexData v2 = _VertexBuffer[indices.z];
+    uint matID = mat_id(v0);
+
+    // Evaluate the barycentrics
+    BarycentricDeriv baryDeriv = evaluate_barycentrics(position(v0), position(v1), position(v2), inPixelCoords);
+
+    // Calculdate with derivatives
+    float2 uv, uvDX, uvDY;
+    interpolate_with_deriv(baryDeriv, tex_coord(v0), tex_coord(v1), tex_coord(v2), uv, uvDX, uvDY);
+
+    // Fill the MLP's input
+#ifdef COOP_VECTOR_SUPPORTED
+    vector<float16_t, MLP0_IN_DIM> infVector;
+#else
+    float16_t infVector[16];
+#endif
+
+    // Sample the compressed latent space
+#if !defined(LS_BC1_COMPRESSION)
+    uint mipRes = MIP0_RES;
+    uint mipPixelOffset = 0;
+    for (uint mipIdx = 0; mipIdx < NUM_MIPS; ++mipIdx)
+    {   
+        // Blend them
+        half3 colorVal = sample_latent_space_raw(mipRes, mipPixelOffset, uv.xy);
+
+        // Export to the shared memory
+        infVector[3 * mipIdx + 0] = colorVal.x;
+        infVector[3 * mipIdx + 1] = colorVal.y;
+        infVector[3 * mipIdx + 2] = colorVal.z;
+        mipPixelOffset += mipRes * mipRes;
+
+        // Only reduce the size every two levels
+        if ((mipIdx & 0x1) != 0)
+            mipRes >>= 1;
+    }
+#else
+    sample_latent_space_bc1(infVector, uv, uvDX, uvDY, matID);
+#endif
+
+    // Fill the rest with zeros
+    infVector[12] = float16_t(compute_lod(uv, uvDX, uvDY));
+    infVector[13] = float16_t(0.0);
+    infVector[14] = float16_t(0.0);
+    infVector[15] = float16_t(0.0);
+
+    // Do the MLP Evaluation
+    mlp_evaluation(infVector, matID);
+
+    // And we're done
+    if (uv.x < 0.0)
+        return;
+
+    // Output tile coords
+    uint2 tileCoords = uint2(inPixelCoords.x / 8, inPixelCoords.y / 4);
+    uint outWGIdx = tileCoords.x + tileCoords.y * _TileSize.x;
+    uint groupIdx = (inPixelCoords.x % 8) + (inPixelCoords.y % 4) * 8;
+
+#ifdef COOP_VECTOR_SUPPORTED
+    const uint outputOffset = 2 * MLP2_OUT_DIM * (WORK_GROUP_SIZE * outWGIdx + groupIdx);
+    _OutputBufferRW.Store(outputOffset, infVector);
+#else
+    const uint oGroupOffset = WORK_GROUP_SIZE * outWGIdx * 2;
+    for (uint32_t i = 0; i < 2; ++i)
+    {
+        uint4 outVec;
+        for (uint32_t j = 0; j < 4; ++j)
+        {
+            float16_t lo = infVector[i*8 + j * 2];
+            float16_t hi = infVector[i*8 + j * 2 + 1];
+            outVec[j] = packHalf2x16(float2(lo, hi));
+        }
+        _OutputBufferRW[oGroupOffset + groupIdx * 2 + i] = outVec;
+    }
+#endif
+}
+
+[numthreads(8, 4, 1)]
+void main(uint groupIndex: SV_GroupIndex, uint2 groupID: SV_GroupID, uint2 groupThreadID : SV_GroupThreadID)
+{
+    // Get the actual work group Index
+    uint actualWorkGroupIDX = _TileBuffer[1 + groupID.x];
+
+    // Get it as coordinates
+    uint wgX = actualWorkGroupIDX % _TileSize.x;
+    uint wgY = actualWorkGroupIDX / _TileSize.x;
+
+    // Compute the pixel coords
+    uint2 pixelCoords = uint2(wgX * 8 + groupThreadID.x, wgY * 4 + groupThreadID.y);
+
+    // Run the inference
+    inference(pixelCoords);
+}
+
+[numthreads(8, 4, 1)]
+void main_repacked(uint groupIndex: SV_GroupIndex, uint2 groupID: SV_GroupID, uint2 groupThreadID : SV_GroupThreadID)
+{
+    // Fetch the pixel coord
+    uint32_t pixelIdx = _TileBuffer[1 + 32 * groupID.x + groupIndex];
+
+    // Compute the pixel coords
+    uint2 pixelCoords = uint2(pixelIdx % _ScreenSize.x, pixelIdx / _ScreenSize.x);
+
+    // Run the inference
+    inference(pixelCoords);
+}

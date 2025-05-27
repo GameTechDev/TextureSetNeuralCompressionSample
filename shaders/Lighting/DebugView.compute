@@ -1,0 +1,162 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// Declare the uniform location
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVS
+#define VISIBILITY_BUFFER_BINDING t0
+#define VERTEX_DATA_BUFFER_BINDING t1
+#define INDEX_BUFFER_BINDING t2
+#define INFERENCE_BUFFER_BINDING t3
+#define TILE_BUFFER_BINDING t4
+
+// UAVs
+#define COLOR_TEXTURE_BINDING u0
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+#include "shader_lib/visibility_utilities.hlsl"
+
+// SRVs
+Texture2D<uint> _VisibilityBuffer: register(VISIBILITY_BUFFER_BINDING);
+StructuredBuffer<float16_t> _InferenceBuffer: register(INFERENCE_BUFFER_BINDING);
+StructuredBuffer<uint32_t> _IndexationBuffer: register(TILE_BUFFER_BINDING);
+
+// UAV
+RWTexture2D<float4> _ColorTextureRW: register(COLOR_TEXTURE_BINDING);
+
+[numthreads(8, 4, 1)]
+void main(uint groupIndex: SV_GroupIndex, uint2 groupID: SV_GroupID, uint2 groupThreadID : SV_GroupThreadID)
+{
+    // Get the actual work group Index
+    uint actualWorkGroupIDX = _IndexationBuffer[1 + groupID.x];
+
+    // Get it as coordinates
+    uint wgX = actualWorkGroupIDX % _TileSize.x;
+    uint wgY = actualWorkGroupIDX / _TileSize.x;
+
+    // Compute the pixel coords
+    uint2 pixelCoords = uint2(wgX * 8 + groupThreadID.x, wgY * 4 + groupThreadID.y);
+
+    // Tile index
+    uint pixelIdx = pixelCoords.x + pixelCoords.y * uint(_ScreenSize.x);
+
+    // Read the vibilisty buffer
+    uint visibilityData = _VisibilityBuffer.Load(int3(pixelCoords.xy, 0));
+
+    // Inferred pixels
+    if (_ChannelSet == 8)
+    {
+        bool borderPixel = groupThreadID.x == 0 || groupThreadID.y == 0 || groupThreadID.x == 7 || groupThreadID.y == 3;
+        float3 outColor = float3(0.0, 0.0, 0.0);
+        if (!borderPixel)
+        {
+            // Check the validity of the pixel
+            uint32_t primitiveID;
+            uint matID = 255;
+            if (unpack_visibility_buffer(visibilityData, primitiveID))
+            {
+                uint3 indices = primitive_indices(primitiveID);
+                VertexData v0 = _VertexBuffer[indices.x];
+                matID = mat_id(v0);
+            }
+            uint minID = WaveActiveMin(matID);
+            uint maxID = WaveActiveMax(matID);
+            if (maxID != minID)
+                outColor = float3(1.0, 0.0, 0.0);
+            else
+                outColor = float3(0.0, 1.0, 0.0);
+        }
+
+        _ColorTextureRW[pixelCoords.xy] = float4(outColor, 1.0);
+        return;
+    }
+
+    // Check the validity of the pixel
+    if (!is_valid_visibility_value(visibilityData))
+    {
+        _ColorTextureRW[pixelCoords.xy] = float4(0.5, 0.5, 0.5, 1.0);
+        return;
+    }
+
+    // Offset in the inference buffer
+    uint bufferOffset = (actualWorkGroupIDX * 32  + groupIndex ) * 16;
+
+    // Read the color from the inference buffer
+    float3 data = float3(0.0, 0.0, 0.0);
+
+    switch (_ChannelSet)
+    {
+        case 7:
+        {
+            data.x = _InferenceBuffer[bufferOffset + DIFFUSE_OFFSET];
+            data.y = _InferenceBuffer[bufferOffset + DIFFUSE_OFFSET + 1];
+            data.z = _InferenceBuffer[bufferOffset + DIFFUSE_OFFSET + 2];
+        }
+        break;
+        case 6:
+        {
+            data.x = _InferenceBuffer[bufferOffset + NORMAL_OFFSET];
+            data.y = _InferenceBuffer[bufferOffset + NORMAL_OFFSET + 1];
+            data.z = _InferenceBuffer[bufferOffset + NORMAL_OFFSET + 2];
+        }
+        break;
+        case 5:
+        {
+            float ao = _InferenceBuffer[bufferOffset + AO_OFFSET];
+            data.x = ao;
+            data.y = ao;
+            data.z = ao;
+        }
+        break;
+        case 4:
+        {
+            float rough = _InferenceBuffer[bufferOffset + ROUGHNESS_OFFSET];
+            data.x = rough;
+            data.y = rough;
+            data.z = rough;
+        }
+        break;
+        case 3:
+        {
+            float metal = _InferenceBuffer[bufferOffset + METALNESS_OFFSET];
+            data.x = metal;
+            data.y = metal;
+            data.z = metal;
+        }
+        break;
+        case 2:
+        {
+            float dis = _InferenceBuffer[bufferOffset + DISPLACEMENT_OFFSET];
+            data.x = dis;
+            data.y = dis;
+            data.z = dis;
+        }
+        break;
+        case 1:
+        {
+            data.x = _InferenceBuffer[bufferOffset + MASK_OFFSET];
+            data.y = _InferenceBuffer[bufferOffset + MASK_OFFSET + 1];
+            data.z = 0.0;
+        }
+        break;
+        case 0:
+        {
+            float thick = _InferenceBuffer[bufferOffset + THICKNESS_OFFSET];
+            data.x = thick;
+            data.y = thick;
+            data.z = thick;
+        }
+        break;
+    }
+
+    // Write the color to the 2D texture
+    _ColorTextureRW[pixelCoords.xy] = float4(data, 1.0);
+}

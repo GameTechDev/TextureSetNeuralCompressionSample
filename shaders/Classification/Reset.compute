@@ -1,0 +1,41 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVS
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// UAVs
+#define ACTIVE_TILE_BUFFER_BINDING_SLOT u0
+#define UNIFORM_TILE_BUFFER_BINDING_SLOT u1
+#define COMPLEX_TILE_BUFFER_BINDING_SLOT u2
+#define MLP_USAGE_BUFFER_BINDING_SLOT u3
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+
+// UAVs
+RWStructuredBuffer<uint32_t> _ActiveTileBufferRW: register(ACTIVE_TILE_BUFFER_BINDING_SLOT);
+RWStructuredBuffer<uint32_t> _UniformTileBufferRW: register(UNIFORM_TILE_BUFFER_BINDING_SLOT);
+RWStructuredBuffer<uint32_t> _ComplexTileBufferRW: register(COMPLEX_TILE_BUFFER_BINDING_SLOT);
+RWStructuredBuffer<uint32_t> _MLPUsageBufferRW: register(MLP_USAGE_BUFFER_BINDING_SLOT);
+
+[numthreads(1, 1, 1)]
+void main()
+{
+	// Tile classification
+    _ActiveTileBufferRW[0] = 0;
+    _UniformTileBufferRW[0] = 0;
+    _ComplexTileBufferRW[0] = 0;
+
+    // MLP Usage
+    for(uint32_t mlpIdx = 0; mlpIdx < _MLPCount; ++mlpIdx)
+    {
+        _MLPUsageBufferRW[0] = 0;
+        _MLPUsageBufferRW[_MLPCount + 0] = 0;
+    }
+}

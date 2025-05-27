@@ -1,0 +1,4 @@
+build/
+output/
+.vs/
+nuget_packages/

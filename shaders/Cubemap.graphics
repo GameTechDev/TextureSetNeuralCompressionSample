@@ -1,0 +1,108 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVs
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define CUBEMAP_TEXTURE_BINDING_SLOT t0
+#define CONVOLVED_TEXTURE_BINDING_SLOT t1
+#define SHADOW_TEXTURE_BINDING_SLOT t2
+#define DISPLACEMENT_BUFFER_BINDING_SLOT t3
+
+// Samplers
+#define CUBEMAP_SAMPLER_BINDING_SLOT s0
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/transform.hlsl"
+#include "shader_lib/intersection.hlsl"
+
+// Evaluate the cubemap distance
+#define CUBEMAP_DISTANCE 10000.0f
+#define CHECKER_BOARD_SIZE 1.5f
+
+// SRVs
+TextureCube<float4> _BackgroundTexture: register(CUBEMAP_TEXTURE_BINDING_SLOT);
+TextureCube<float4> _IndirectDiffuseTexture: register(CONVOLVED_TEXTURE_BINDING_SLOT);
+Texture2D<float> _ShadowTexture: register(SHADOW_TEXTURE_BINDING_SLOT);
+StructuredBuffer<float> _DisplacementBuffer: register(DISPLACEMENT_BUFFER_BINDING_SLOT);
+
+// Samplers
+SamplerState sampler_linear_clamp : register(CUBEMAP_SAMPLER_BINDING_SLOT);
+
+struct VertexInput
+{
+    uint instanceID : SV_InstanceID;
+    uint vertexID : SV_VertexID;
+};
+
+struct VertexOutput
+{
+    float4 positionCS : SV_POSITION;
+};
+
+VertexOutput vert(VertexInput input)
+{
+    VertexOutput output;
+    output.positionCS = vertex_id_to_cs_pos(input.vertexID);
+    return output;
+}
+
+struct PixelInput
+{
+    float4 positionCS : SV_POSITION;
+};
+
+float4 frag(PixelInput input) : SV_Target0
+{
+    // Build the a world direction
+    float2 pixelCoord = input.positionCS.xy;
+    pixelCoord.y = _ScreenSize.y - pixelCoord.y;
+    float3 depthBufferPosition = evaluate_world_space_position(pixelCoord / float2(_ScreenSize.xy), 0.5, _InvViewProjectionMatrix);
+
+    // Compute the world direction and world position
+    float3 rayDir = normalize(depthBufferPosition);
+
+    // Sample the diffuse sky
+    float3 blendColor = _IndirectDiffuseTexture.Sample(sampler_linear_clamp, rayDir).xyz;
+
+    // Intersect the infinite plane
+    float t = intersect_plane(_CameraPosition, rayDir, float3(0.0, 1.0, 0.0));
+
+    // Clamp the ray distance
+    t = t > 0.0 ? min(t, CUBEMAP_DISTANCE) : CUBEMAP_DISTANCE;
+
+    // Compute the virtual position
+    float3 virtualPos = _CameraPosition + rayDir * t;
+
+    // Are we inside the disk ?
+    if (t < CUBEMAP_DISTANCE)
+    {
+        // Sample the lambert cubemap
+        float3 floorColor = _IndirectDiffuseTexture.Sample(sampler_linear_clamp, normalize(float3(0.0, -1.0, 0.0))).xyz * INDIRECT_LIGHTING_MULTIPLIER;
+
+        // Read the shadow value
+        float shadow = _ShadowTexture.SampleLevel(sampler_linear_clamp, input.positionCS.xy / _ScreenSize.xy, 0.0);
+
+        // Evaluate the filtered checkerboard and tint it with the shadow value
+        floorColor *= checker_board((virtualPos.xz + float2(0.0, _DisplacementBuffer[3])) / CHECKER_BOARD_SIZE) * lerp(0.05, 1.0, shadow);
+
+        // Blend with the fog color
+        blendColor = lerp(blendColor, floorColor, exp(-t / 50.0f));
+    }
+
+    // Read the sky color
+    float3 skyColor = _BackgroundTexture.SampleLevel(sampler_linear_clamp, rayDir, 0.0).xyz;
+
+    // Blend the sky and the checkerboard
+    skyColor = lerp(blendColor, skyColor, saturate(virtualPos.y / 5000.0f));
+
+    // return the final color
+    return float4(skyColor, 1.0);
+}

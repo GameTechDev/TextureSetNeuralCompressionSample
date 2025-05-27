@@ -1,0 +1,136 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// Uniforms
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define VISIBILITY_BUFFER_BINDING t0
+#define TILE_BUFFER_BINDING t1
+#define VERTEX_DATA_BUFFER_BINDING t2
+#define INDEX_BUFFER_BINDING t3
+#define TEXTURE_0_BINDING t4
+#define TEXTURE_1_BINDING t5
+#define TEXTURE_2_BINDING t6
+#define TEXTURE_3_BINDING t7
+#define TEXTURE_4_BINDING t8
+
+// UAVs
+#define OUTPUT_BUFFER_BINDING u0
+
+// Samplers
+#define TEXTURE_SAMPLER_BINDING s0
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+#include "shader_lib/visibility_utilities.hlsl"
+
+// SRVs
+Texture2D<uint> _VisibilityBuffer: register(VISIBILITY_BUFFER_BINDING);
+StructuredBuffer<uint32_t> _TileBuffer: register(TILE_BUFFER_BINDING);
+Texture2DArray<float4> _Texture0: register(TEXTURE_0_BINDING);
+Texture2DArray<float4> _Texture1: register(TEXTURE_1_BINDING);
+Texture2DArray<float4> _Texture2: register(TEXTURE_2_BINDING);
+Texture2DArray<float4> _Texture3: register(TEXTURE_3_BINDING);
+Texture2DArray<float4> _Texture4: register(TEXTURE_4_BINDING);
+
+// UAVs
+RWStructuredBuffer<uint4> _OutputBufferRW: register(OUTPUT_BUFFER_BINDING);
+
+// Sampler
+sampler s_texture_sampler: register(TEXTURE_SAMPLER_BINDING);
+
+[numthreads(8, 4, 1)]
+void main(uint groupIndex: SV_GroupIndex, uint2 groupID: SV_GroupID, uint2 groupThreadID : SV_GroupThreadID)
+{
+    // Get the actual work group Index
+    uint actualWorkGroupIDX = _TileBuffer[1 + groupID.x];
+
+    // Get it as coordinates
+    uint wgX = actualWorkGroupIDX % _TileSize.x;
+    uint wgY = actualWorkGroupIDX / _TileSize.x;
+
+    // Compute the pixel coords
+    uint2 pixelCoords = uint2(wgX * 8 + groupThreadID.x, wgY * 4 + groupThreadID.y);
+
+    // Unpack the vibilisty buffer
+    uint visibilityData = _VisibilityBuffer.Load(int3(pixelCoords, 0));
+
+    // Check the validity of the pixel
+    uint32_t primitiveID;
+    if (!unpack_visibility_buffer(visibilityData, primitiveID))
+        return;
+
+    // Read the vertex data and interpolate
+    uint3 indices = primitive_indices(primitiveID);
+    VertexData v0 = _VertexBuffer[indices.x];
+    VertexData v1 = _VertexBuffer[indices.y];
+    VertexData v2 = _VertexBuffer[indices.z];
+    float matID = float(mat_id(v0));
+
+    // Evaluate the barycentrics
+    BarycentricDeriv baryDeriv = evaluate_barycentrics(position(v0), position(v1), position(v2), pixelCoords);
+
+    // Calculdate with derivatives
+    float2 uv, uvDX, uvDY;
+    interpolate_with_deriv(baryDeriv, tex_coord(v0), tex_coord(v1), tex_coord(v2), uv, uvDX, uvDY);
+
+    // Sampler the textures
+    float4 data0 = _Texture0.SampleGrad(s_texture_sampler, float3(uv.xy, matID), uvDX, uvDY);
+    float4 data1 = _Texture1.SampleGrad(s_texture_sampler, float3(uv.xy, matID), uvDX, uvDY);
+    float4 data2 = _Texture2.SampleGrad(s_texture_sampler, float3(uv.xy, matID), uvDX, uvDY);
+    float4 data3 = _Texture3.SampleGrad(s_texture_sampler, float3(uv.xy, matID), uvDX, uvDY);
+    float4 data4 = _Texture4.SampleGrad(s_texture_sampler, float3(uv.xy, matID), uvDX, uvDY);
+
+    // Pack to an array
+    float16_t initialMemory[16];
+
+    // AO
+    initialMemory[0] = float16_t(data2.x);
+
+    // Diffuse color
+    initialMemory[1] = float16_t(data3.y);
+    initialMemory[2] = float16_t(data3.z);
+    initialMemory[3] = float16_t(data4.x);
+
+    // Displacement
+    initialMemory[4] = float16_t(data1.x);
+
+    // Mask
+    initialMemory[5] = float16_t(data0.y);
+    initialMemory[6] = float16_t(data0.z);
+
+    // Metalness
+    initialMemory[7] = float16_t(data1.y);
+
+    // Normal
+    initialMemory[8] = float16_t(data2.y);
+    initialMemory[9] = float16_t(data2.z);
+    initialMemory[10] = float16_t(data3.x);
+
+    // Roughness
+    initialMemory[11] = float16_t(data1.z);
+
+    // Thickness
+    initialMemory[12] = float16_t(data0.x);
+
+    // Output all of this
+    const uint oGroupOffset = WORK_GROUP_SIZE * actualWorkGroupIDX * 2;
+    for (uint32_t i = 0; i < 2; ++i)
+    {
+        uint4 outVec;
+        for (uint32_t j = 0; j < 4; ++j)
+        {
+            float16_t lo = initialMemory[i*8 + j * 2];
+            float16_t hi = initialMemory[i*8 + j * 2 + 1];
+            outVec[j] = packHalf2x16(float2(lo, hi));
+        }
+        _OutputBufferRW[oGroupOffset + groupIndex * 2 + i] = outVec;
+    }
+}

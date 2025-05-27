@@ -1,0 +1,18 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// SRVs
+StructuredBuffer<float> _InputBuffer: register(t0);
+
+// UAVs
+RWStructuredBuffer<float16_t> _OutputBufferRW: register(u0);
+
+[numthreads(1024, 1, 1)]
+void main(uint disThreaID : SV_DispatchThreadID)
+{
+    _OutputBufferRW[disThreaID] = float16_t(_InputBuffer[disThreaID]);
+}

@@ -1,0 +1,71 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// Constant buffers
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define VISIBILITY_BUFFER_BINDING t0
+#define VERTEX_DATA_BUFFER_BINDING t1
+#define INDEX_BUFFER_BINDING t2
+#define COMPLEX_TILE_BUFFER_BINDING t3
+
+// UAVs
+#define MLP_USAGE_BUFFER_BINDING u0
+#define PIXEL_INDEXATION_BUFFER_BINDING u1
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/visibility_utilities.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+
+// SRV
+Texture2D<uint> _VisibilityBuffer: register(VISIBILITY_BUFFER_BINDING);
+StructuredBuffer<uint32_t> _ComplexTileBuffer: register(COMPLEX_TILE_BUFFER_BINDING);
+
+// UAV
+RWStructuredBuffer<uint32_t> _MLPUsageBufferRW: register(MLP_USAGE_BUFFER_BINDING);
+RWStructuredBuffer<uint32_t> _IndexedTilesBufferRW: register(PIXEL_INDEXATION_BUFFER_BINDING);
+
+[numthreads(8, 4, 1)]
+void main(uint groupID: SV_GroupID, uint2 groupThreadID : SV_GroupThreadID)
+{
+    // Get the actual work group Index
+    uint globalWGID = _ComplexTileBuffer[1 + groupID.x];
+
+    // Get it as coordinates
+    uint wgX = globalWGID % _TileSize.x;
+    uint wgY = globalWGID / _TileSize.x;
+
+    // Compute the pixel coords
+    uint2 pixelCoords = uint2(wgX * 8 + groupThreadID.x, wgY * 4 + groupThreadID.y);
+    uint pixelIndex = pixelCoords.x + pixelCoords.y * _ScreenSize.x;
+
+	// Load the visibility buffer data
+    uint visibilityData = _VisibilityBuffer.Load(int3(pixelCoords, 0));
+
+    // Is this a valid pixel? If yes it needs to register
+    uint32_t primitiveID;
+    if (unpack_visibility_buffer(visibilityData, primitiveID))
+    {
+        // Get the indices
+        uint3 indices = primitive_indices(primitiveID);
+        VertexData v0 = _VertexBuffer[indices.x];  
+
+        // First we need to find if there are multiple MLPs within this work group
+        uint matID = mat_id(v0);
+
+        // This is a mixed tile, so book a slot for this pixel in the right tile groupe
+        uint prevUsage;
+        InterlockedAdd(_MLPUsageBufferRW[matID], 1, prevUsage);
+
+        // Get the the group offset
+        uint32_t tileGroupOffset = _MLPUsageBufferRW[_MLPCount + matID];
+        _IndexedTilesBufferRW[tileGroupOffset * 32 + prevUsage] = pixelIndex;
+    }
+}

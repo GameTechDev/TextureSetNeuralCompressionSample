@@ -1,0 +1,63 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVs
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define VERTEX_DATA_BUFFER_BINDING t0
+#define INDEX_BUFFER_BINDING t1
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/transform.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+#include "shader_lib/visibility_utilities.hlsl"
+
+struct VertexInput
+{
+    uint instanceID : SV_InstanceID;
+    uint vertexID : SV_VertexID;
+};
+
+struct VertexOutput
+{
+    float4 positionCS : SV_POSITION;
+    uint primitiveID: PRIMITIVEID;
+};
+
+VertexOutput vert(VertexInput input)
+{
+    // Get primitive and vertex ID
+    uint primitiveID = input.vertexID / 3;
+    uint localVertID = input.vertexID % 3;
+
+    // Get the primitive indices
+    uint vertexGlobalIndex = _IndexBuffer[3 * primitiveID + localVertID];
+
+    // Grab the vertex
+    VertexData vertData = _VertexBuffer[vertexGlobalIndex];
+
+    // Transform and pass to the next stage
+    VertexOutput output;
+    output.positionCS = mul(_ViewProjectionMatrix, float4(position(vertData) - _CameraPosition, 1.0));
+    output.primitiveID = primitiveID;
+    return output;
+}
+
+struct PixelInput
+{
+    float4 positionCS : SV_POSITION;
+    uint primitiveID: PRIMITIVEID;
+    float3 barycentrics: SV_Barycentrics;
+};
+
+uint frag(PixelInput input) : SV_Target0
+{
+    return pack_visibility_buffer(input.primitiveID);
+}

@@ -1,0 +1,102 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVs
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define VISIBILITY_BUFFER_BINDING t0
+#define VERTEX_DATA_BUFFER_BINDING t1
+#define INDEX_BUFFER_BINDING t2
+
+// UAVs
+#define ACTIVE_TILE_BUFFER_BINDING u0
+#define UNIFORM_TILE_BUFFER_BINDING u1
+#define COMPLEX_TILE_BUFFER_BINDING u2
+#define MLP_USAGE_BUFFER_BINDING u3
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/visibility_utilities.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+
+// SRVs
+Texture2D<uint> _VisibilityBuffer: register(VISIBILITY_BUFFER_BINDING);
+
+// UAVs
+RWStructuredBuffer<uint32_t> _ActiveTileBufferRW: register(ACTIVE_TILE_BUFFER_BINDING);
+RWStructuredBuffer<uint32_t> _UniformTileBufferRW: register(UNIFORM_TILE_BUFFER_BINDING);
+RWStructuredBuffer<uint32_t> _ComplexTileBufferRW: register(COMPLEX_TILE_BUFFER_BINDING);
+RWStructuredBuffer<uint32_t> _MLPUsageBufferRW: register(MLP_USAGE_BUFFER_BINDING);
+
+[numthreads(8, 4, 1)]
+void main(uint2 groupID: SV_GroupID, uint2 pixelCoords : SV_DispatchThreadID)
+{
+	// Load the visibility buffer data for this pixel
+    uint visibilityData = _VisibilityBuffer.Load(int3(pixelCoords, 0));
+
+    // Read the primitive ID 
+    uint32_t primitiveID;
+    if (unpack_visibility_buffer(visibilityData, primitiveID))
+    {
+        // Get the triangle indices
+        uint3 indices = primitive_indices(primitiveID);
+        VertexData v0 = _VertexBuffer[indices.x];  
+
+        // First we need to find if there are multiple MLPs within this work group
+        uint matID = mat_id(v0);
+        uint maxID = WaveActiveMax(matID);
+        uint minID = WaveActiveMin(matID);
+
+        // Generate the global workgroupID
+        uint globalWGID = uint(groupID.x + groupID.y * _TileSize.x);
+
+        // This workgroup is uniform, and has at least half of active pixels
+        if (maxID == minID)
+        {
+            // Flag the tiles for indirect inference if required
+            if (WaveIsFirstLane())
+            {
+                // Allocate a slot for the tile
+                uint tileSlot;
+                InterlockedAdd(_UniformTileBufferRW[0], 1, tileSlot);
+
+                // Prepare for indirection
+                _UniformTileBufferRW[tileSlot + 1] = globalWGID;
+            }
+        }
+        else
+        {
+            // Either these tiles are mixed or don't have enough work and need to be merged
+            uint prevUsage;
+            InterlockedAdd(_MLPUsageBufferRW[matID], 1, prevUsage);
+
+            // Keep track of the complex tiles
+            if (WaveIsFirstLane())
+            {
+                // Allocate a slot for the tile
+                uint tileSlot;
+                InterlockedAdd(_ComplexTileBufferRW[0], 1, tileSlot);
+
+                // Prepare for indirection
+                _ComplexTileBufferRW[tileSlot + 1] = globalWGID;
+            }
+        }
+
+        // We also need to keep track of all the tiles
+        if (WaveIsFirstLane())
+        {
+            // Allocate a slot for the tile
+            uint tileSlot;
+            InterlockedAdd(_ActiveTileBufferRW[0], 1, tileSlot);
+
+            // Prepare for indirection
+            _ActiveTileBufferRW[tileSlot + 1] = globalWGID;
+        }
+    }
+}

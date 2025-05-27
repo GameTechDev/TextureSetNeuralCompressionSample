@@ -1,0 +1,109 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// Declare the uniform location
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define VISIBILITY_BUFFER_BINDING t0
+#define INFERENCE_BUFFER_BINDING t1
+#define INDEXATION_BUFFER_BINDING t2
+#define PRE_INTEGRATED_FGD_BINDING t3
+#define CONVOLVED_GGX_BINDING t4
+#define CONVOLVED_LAMBERT_BINDING t5
+#define VERTEX_DATA_BUFFER_BINDING t6
+#define INDEX_BUFFER_BINDING t7
+#define SHADOW_TEXTURE_BINDING t8
+
+// UAVs
+#define COLOR_TEXTURE_BINDING u0
+
+// Samplers
+#define FGD_SAMPLER_BINDING s0
+#define GGX_IBL_SAMPLER_BINDING s1
+#define LAMBERT_IBL_SAMPLER_BINDING s2
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/lightloop.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+#include "shader_lib/visibility_utilities.hlsl"
+
+// Images
+Texture2D<uint> _VisibilityBuffer: register(VISIBILITY_BUFFER_BINDING);
+StructuredBuffer<float16_t> _InferenceBuffer: register(INFERENCE_BUFFER_BINDING);
+StructuredBuffer<uint32_t> _TileBuffer: register(INDEXATION_BUFFER_BINDING);
+Texture2D<float> _ShadowTexture: register(SHADOW_TEXTURE_BINDING);
+
+// UAV
+RWTexture2D<float4> _ColorTextureRW: register(COLOR_TEXTURE_BINDING);
+
+[numthreads(8, 4, 1)]
+void main(uint groupIndex: SV_GroupIndex, uint2 groupID: SV_GroupID, uint2 groupThreadID : SV_GroupThreadID)
+{
+    // Get the actual work group Index
+    uint actualWorkGroupIDX = _TileBuffer[1 + groupID.x];
+
+    // Get it as coordinates
+    uint wgX = actualWorkGroupIDX % _TileSize.x;
+    uint wgY = actualWorkGroupIDX / _TileSize.x;
+
+    // Compute the pixel coords
+    uint2 pixelCoords = uint2(wgX * 8 + groupThreadID.x, wgY * 4 + groupThreadID.y);
+
+    // Tile index
+    uint pixelIdx = pixelCoords.x + pixelCoords.y * uint(_ScreenSize.x);
+
+    // Unpack the vibilisty buffer
+    uint visibilityData = _VisibilityBuffer.Load(int3(pixelCoords.xy, 0));
+
+    // Check the validity of the pixel
+    uint32_t primitiveID;
+    if (!unpack_visibility_buffer(visibilityData, primitiveID))
+        return;
+
+    // Offset in the inference buffer
+    uint localPixelIdx = groupThreadID.x + groupThreadID.y * 8;
+    uint bufferOffset = (actualWorkGroupIDX * 32 + localPixelIdx) * 16;
+
+    // Fill the surface data
+    SurfaceData surfaceData;
+    surfaceData.baseColor = float3(_InferenceBuffer[bufferOffset + DIFFUSE_OFFSET], _InferenceBuffer[bufferOffset + DIFFUSE_OFFSET + 1], _InferenceBuffer[bufferOffset + DIFFUSE_OFFSET + 2]);
+    surfaceData.normalTS = float3(_InferenceBuffer[bufferOffset + NORMAL_OFFSET], _InferenceBuffer[bufferOffset + NORMAL_OFFSET + 1], _InferenceBuffer[bufferOffset + NORMAL_OFFSET + 2]);
+    surfaceData.ambientOcclusion = _InferenceBuffer[bufferOffset + AO_OFFSET];
+    surfaceData.perceptualRoughness = _InferenceBuffer[bufferOffset + ROUGHNESS_OFFSET];
+    surfaceData.metalness = _InferenceBuffer[bufferOffset + METALNESS_OFFSET];
+    surfaceData.thickness = _InferenceBuffer[bufferOffset + THICKNESS_OFFSET];
+    surfaceData.mask = float2(_InferenceBuffer[bufferOffset + MASK_OFFSET], _InferenceBuffer[bufferOffset + MASK_OFFSET + 1]);
+    //float dis = _InferenceBuffer[bufferOffset + DISPLACEMENT_OFFSET];
+
+    // Geometry data
+    uint3 indices = primitive_indices(primitiveID);
+    VertexData v0 = _VertexBuffer[indices.x];  
+    VertexData v1 = _VertexBuffer[indices.y];
+    VertexData v2 = _VertexBuffer[indices.z];
+    float3 barycentrics = evaluate_barycentrics_no_deriv(position(v0), position(v1), position(v2), pixelCoords);
+    GeometryData geometryData;
+    geometryData.geoNormalWS = normal(v0) * barycentrics.x + normal(v1) * barycentrics.y + normal(v2) * barycentrics.z;
+    geometryData.tangentWS = tangent(v0) * barycentrics.x + tangent(v1) * barycentrics.y + tangent(v2) * barycentrics.z;
+    float2 screenUV = (pixelCoords.xy + float2(0.5, 0.5)) / float2(_ScreenSize.xy);
+    geometryData.viewWS = -normalize(evaluate_world_space_position(float2(screenUV.x, 1.0 - screenUV.y), 1.0, _InvViewProjectionMatrix));
+
+    // Load the shadow
+    float shadow = _ShadowTexture.Load(int3(pixelCoords.xy, 0));
+
+    // Evaluate the view Dir
+    BSDFData bsdfData;
+    evaluate_bsdf_data(surfaceData, geometryData, bsdfData);
+
+    // Evaluate the lighting
+    float3 finalColor = evaluate_lighting(bsdfData, geometryData, shadow);
+    
+    // Write the color to the 2D texture
+    _ColorTextureRW[pixelCoords.xy] = float4(finalColor, 1.0);
+}

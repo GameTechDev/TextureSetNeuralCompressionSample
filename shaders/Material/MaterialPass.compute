@@ -1,0 +1,188 @@
+/*
+ * Copyright (C) 2025 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+// CBVs
+#define GLOBAL_CB_BINDING_SLOT b0
+
+// SRVs
+#define VISIBILITY_BUFFER_BINDING t0
+#define SHADOW_BUFFER_BINDING t1
+#define INDEXATION_BUFFER_BINDING t2
+#define VERTEX_DATA_BUFFER_BINDING t3
+#define INDEX_BUFFER_BINDING t4
+
+#define PRE_INTEGRATED_FGD_BINDING t5
+#define CONVOLVED_GGX_BINDING t6
+#define CONVOLVED_LAMBERT_BINDING t7
+
+#define UV_OFFSET_BUFFER_BINDING t8
+#define WEIGHT_0_BUFFER_BINDING t9
+#define WEIGHT_0_BIAS_BINDING t10
+#define WEIGHT_1_BUFFER_BINDING t11
+#define WEIGHT_1_BIAS_BINDING t12
+#define WEIGHT_2_BUFFER_BINDING t13
+#define WEIGHT_2_BIAS_BINDING t14
+
+// BC1 Compression enabled
+#if defined(LS_BC1_COMPRESSION)
+    #define LS0_BC1_BINDING t15
+    #define LS1_BC1_BINDING t16
+    #define LS2_BC1_BINDING t17
+    #define LS3_BC1_BINDING t18
+    #define BC1_SAMPLER_BINDING s3
+#endif
+
+// UAVs
+#define COLOR_TEXTURE_BINDING u0
+
+// Samplers
+#define FGD_SAMPLER_BINDING s0
+#define GGX_IBL_SAMPLER_BINDING s1
+#define LAMBERT_IBL_SAMPLER_BINDING s2
+
+// Includes
+#include "shader_lib/common.hlsl"
+#include "shader_lib/constant_buffers.hlsl"
+#include "shader_lib/mesh_utilities.hlsl"
+#include "shader_lib/inference_utils.hlsl"
+#include "shader_lib/visibility_utilities.hlsl"
+#include "shader_lib/lightloop.hlsl"
+
+// SRVs
+Texture2D<uint> _VisibilityBuffer: register(VISIBILITY_BUFFER_BINDING);
+Texture2D<float> _ShadowTexture: register(SHADOW_BUFFER_BINDING);
+StructuredBuffer<uint32_t> _TileBuffer: register(INDEXATION_BUFFER_BINDING);
+
+// UAVs
+RWTexture2D<float4> _ColorTextureRW: register(COLOR_TEXTURE_BINDING);
+
+void inference_and_lighting(uint2 pixelCoords)
+{
+    // Compute the pixel coordinates
+    uint visibilityData = _VisibilityBuffer.Load(int3(pixelCoords, 0));
+
+    // Check the validity of the pixel
+    uint32_t primitiveID;
+    unpack_visibility_buffer(visibilityData, primitiveID);
+
+    // Read the vertex data and interpolate
+    uint3 indices = primitive_indices(primitiveID);
+    VertexData v0 = _VertexBuffer[indices.x];  
+    VertexData v1 = _VertexBuffer[indices.y];
+    VertexData v2 = _VertexBuffer[indices.z];
+    uint matID = mat_id(v0);
+
+    // Evaluate the barycentrics
+    BarycentricDeriv baryDeriv = evaluate_barycentrics(position(v0), position(v1), position(v2), pixelCoords);
+
+    // Calculdate with derivatives
+    float2 uv, uvDX, uvDY;
+    interpolate_with_deriv(baryDeriv, tex_coord(v0), tex_coord(v1), tex_coord(v2), uv, uvDX, uvDY);
+
+    // Fill the MLP's input
+    #ifdef COOP_VECTOR_SUPPORTED
+    vector<float16_t, MLP0_IN_DIM> infVector;
+    #else
+    float16_t infVector[16];
+    #endif
+
+#if !defined(LS_BC1_COMPRESSION)
+    uint mipRes = MIP0_RES;
+    uint mipPixelOffset = 0;
+    for (uint mipIdx = 0; mipIdx < NUM_MIPS; ++mipIdx)
+    {   
+        // Blend them
+        half3 colorVal = sample_latent_space_raw(mipRes, mipPixelOffset, uv.xy);
+
+        // Export to the shared memory
+        infVector[3 * mipIdx + 0] = float16_t(colorVal.x);
+        infVector[3 * mipIdx + 1] = float16_t(colorVal.y);
+        infVector[3 * mipIdx + 2] = float16_t(colorVal.z);
+        mipPixelOffset += mipRes * mipRes;
+
+        // Only reduce the size every two levels
+        if ((mipIdx & 0x1) != 0)
+            mipRes >>= 1;
+    }
+#else
+    sample_latent_space_bc1(infVector, uv, uvDX, uvDY, mat_id(v0));
+#endif
+
+    // Fill the rest with zeros
+    infVector[12] = float16_t(compute_lod(uv, uvDX, uvDY));
+    infVector[13] = float16_t(0.0);
+    infVector[14] = float16_t(0.0);
+    infVector[15] = float16_t(0.0);
+
+    // Do the MLP Evaluation
+    mlp_evaluation(infVector, matID);
+
+    // Check the validity of the pixel
+    if (!is_valid_visibility_value(visibilityData))
+        return;
+
+    // Fill the surface data
+    SurfaceData surfaceData;
+    surfaceData.baseColor = float3(infVector[DIFFUSE_OFFSET], infVector[DIFFUSE_OFFSET + 1], infVector[DIFFUSE_OFFSET + 2]);
+    surfaceData.normalTS = float3(infVector[NORMAL_OFFSET], infVector[NORMAL_OFFSET + 1], infVector[NORMAL_OFFSET + 2]);
+    surfaceData.ambientOcclusion = infVector[AO_OFFSET];
+    surfaceData.perceptualRoughness = infVector[ROUGHNESS_OFFSET];
+    surfaceData.metalness = infVector[METALNESS_OFFSET];
+    surfaceData.thickness = infVector[THICKNESS_OFFSET];
+    surfaceData.mask = float2(infVector[MASK_OFFSET], infVector[MASK_OFFSET + 1]);
+    //float dis = pongMemory[DISPLACEMENT_OFFSET];
+
+    // Geometry data
+    GeometryData geometryData;
+    geometryData.geoNormalWS = normal(v0) * baryDeriv.bary.x + normal(v1) * baryDeriv.bary.y + normal(v2) * baryDeriv.bary.z;
+    geometryData.tangentWS = tangent(v0) * baryDeriv.bary.x + tangent(v1) * baryDeriv.bary.y + tangent(v2) * baryDeriv.bary.z;
+    float2 screenUV = (pixelCoords.xy + float2(0.5, 0.5)) / float2(_ScreenSize.xy);
+    geometryData.viewWS = -normalize(evaluate_world_space_position(float2(screenUV.x, 1.0 - screenUV.y), 1.0, _InvViewProjectionMatrix));
+    
+    // Evaluate the view Dir
+    BSDFData bsdfData;
+    evaluate_bsdf_data(surfaceData, geometryData, bsdfData);
+
+    // Load the shadow
+    float shadow = _ShadowTexture.Load(int3(pixelCoords.xy, 0));
+
+    // Evaluate the lighting
+    float3 finalColor = evaluate_lighting(bsdfData, geometryData, shadow);
+
+    // Write the color to the 2D texture
+    _ColorTextureRW[pixelCoords.xy] = float4(finalColor, 1.0);
+}
+
+[numthreads(8, 4, 1)]
+void main(uint groupIndex: SV_GroupIndex, uint2 groupID: SV_GroupID, uint2 groupThreadID : SV_GroupThreadID)
+{
+    // Get the actual work group Index
+    uint actualWorkGroupIDX = _TileBuffer[1 + groupID.x];
+
+    // Get it as coordinates
+    uint wgX = actualWorkGroupIDX % _TileSize.x;
+    uint wgY = actualWorkGroupIDX / _TileSize.x;
+
+    // Compute the pixel coords
+    uint2 pixelCoords = uint2(wgX * 8 + groupThreadID.x, wgY * 4 + groupThreadID.y);
+
+    // Run the inference
+    inference_and_lighting(pixelCoords);
+}
+
+[numthreads(8, 4, 1)]
+void main_repacked(uint groupIndex: SV_GroupIndex, uint2 groupID: SV_GroupID, uint2 groupThreadID : SV_GroupThreadID)
+{
+    // Fetch the pixel coord
+    uint32_t pixelIdx = _TileBuffer[1 + WORK_GROUP_SIZE * groupID.x + groupIndex];
+
+    // Compute the pixel coords
+    uint2 pixelCoords = uint2(pixelIdx % _ScreenSize.x, pixelIdx / _ScreenSize.x);
+
+    // Run the inference
+    inference_and_lighting(pixelCoords);
+}
