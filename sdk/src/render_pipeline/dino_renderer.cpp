@@ -54,7 +54,7 @@ void DinoRenderer::initialize(uint64_t hInstance, const CommandLineOptions& opti
 
     // Create the graphics components
     graphics::setup_graphics_api(GraphicsAPI::DX12);
-    //d3d12::device::enable_debug_layer();
+    // graphics::device::enable_debug_layer();
     graphics::device::enable_experimental_features();
     m_Device = graphics::device::create_graphics_device();
     m_Window = graphics::window::create_window(m_Device, (uint64_t)hInstance, 1920, 1080, "Intel TSNC (DX12)");

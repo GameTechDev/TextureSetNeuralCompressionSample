@@ -1894,9 +1894,9 @@ namespace d3d12
 			{
 				// DestInfo
 				{
-					0,																												// DestSize to be populated by driver implementation
+					optimal ? 0 : width * height * sizeof(float16_t),																												// DestSize to be populated by driver implementation
 					optimal ? D3D12_LINEAR_ALGEBRA_MATRIX_LAYOUT_MUL_OPTIMAL : D3D12_LINEAR_ALGEBRA_MATRIX_LAYOUT_COLUMN_MAJOR,     // convert to mul optimal layout
-					0,																												// stride is ignored since optimal layout is implementation dependent
+					optimal ? 0 : width * sizeof(float16_t),																												// stride is ignored since optimal layout is implementation dependent
 					width,																											// number of rows in weight matrix to be converted
 					height,																											// number of columns in weight matrix to converted
 					D3D12_LINEAR_ALGEBRA_DATATYPE_FLOAT16																			// convert to float16_t datatype

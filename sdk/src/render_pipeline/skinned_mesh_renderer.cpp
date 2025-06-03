@@ -94,7 +94,7 @@ void SkinnedMeshRenderer::reload_shaders(const std::string& shaderLibrary)
         GraphicsPipelineDescriptor gpd;
         gpd.includeDirectories.push_back(shaderLibrary);
         gpd.filename = shaderLibrary + "\\Mesh\\VisibilityPass.graphics";
-        gpd.rtFormat[0] = TextureFormat::R16_UInt;
+        gpd.rtFormat[0] = TextureFormat::R32_UInt;
         gpd.depthStencilState.enableDepth = true;
         gpd.depthStencilState.depthtest = DepthTest::LEqual;
         gpd.depthStencilState.depthWrite = true;

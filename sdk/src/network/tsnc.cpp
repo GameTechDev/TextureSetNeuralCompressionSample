@@ -171,8 +171,8 @@ void TSNC::upload_network(CommandQueue cmdQ, CommandBuffer cmdB)
             if (m_CVS)
             {
                 mlp::upload_and_convert_matrices(m_Device, cmdQ, cmdB, (char*)cpuMLP.mlp0Buffer.data(), cpuMLP.mlp0Width, cpuMLP.mlp0Height, m_Nwk.mlp.weight0Buffer, m_Nwk.mlp.weight0OptimalBuffer, setIdx * cpuMLP.mlp0Width * cpuMLP.mlp0Height * sizeof(float16_t));
-                mlp::upload_and_convert_matrices(m_Device, cmdQ, cmdB, (char*)cpuMLP.mlp1Buffer.data(), cpuMLP.mlp1Width, cpuMLP.mlp1Height, m_Nwk.mlp.weight1Buffer, m_Nwk.mlp.weight1OptimalBuffer, setIdx * cpuMLP.mlp0Width * cpuMLP.mlp0Height * sizeof(float16_t));
-                mlp::upload_and_convert_matrices(m_Device, cmdQ, cmdB, (char*)cpuMLP.mlp2Buffer.data(), cpuMLP.mlp2Width, cpuMLP.mlp2Height, m_Nwk.mlp.weight2Buffer, m_Nwk.mlp.weight2OptimalBuffer, setIdx * cpuMLP.mlp0Width * cpuMLP.mlp0Height * sizeof(float16_t));
+                mlp::upload_and_convert_matrices(m_Device, cmdQ, cmdB, (char*)cpuMLP.mlp1Buffer.data(), cpuMLP.mlp1Width, cpuMLP.mlp1Height, m_Nwk.mlp.weight1Buffer, m_Nwk.mlp.weight1OptimalBuffer, setIdx * cpuMLP.mlp1Width * cpuMLP.mlp1Height * sizeof(float16_t));
+                mlp::upload_and_convert_matrices(m_Device, cmdQ, cmdB, (char*)cpuMLP.mlp2Buffer.data(), cpuMLP.mlp2Width, cpuMLP.mlp2Height, m_Nwk.mlp.weight2Buffer, m_Nwk.mlp.weight2OptimalBuffer, setIdx * cpuMLP.mlp2Width * cpuMLP.mlp2Height * sizeof(float16_t));
             }
             else
             {
