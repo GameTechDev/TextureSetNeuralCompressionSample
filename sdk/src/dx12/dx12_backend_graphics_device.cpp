@@ -184,7 +184,7 @@ namespace d3d12
             DXGI_ADAPTER_DESC1 dxgiAdapterDesc1;
             adapter->GetDesc1(&dxgiAdapterDesc1);
             dx12_device->adapterName = convert_to_regular(dxgiAdapterDesc1.Description);
-            // wprintf(L"Picked GPU: %s\n", dxgiAdapterDesc1.Description);
+            wprintf(L"Picked GPU: %s\n", dxgiAdapterDesc1.Description);
             // wprintf(L"GPU Memory: %" PRIu64 L"\n", dxgiAdapterDesc1.DedicatedVideoMemory);
 
             // Create the graphics device and ensure it's been succesfully created

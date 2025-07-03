@@ -56,7 +56,13 @@ void DinoRenderer::initialize(uint64_t hInstance, const CommandLineOptions& opti
     graphics::setup_graphics_api(GraphicsAPI::DX12);
     // graphics::device::enable_debug_layer();
     graphics::device::enable_experimental_features();
-    m_Device = graphics::device::create_graphics_device();
+
+    // Create the device based on the criteria
+    if (options.adapterIndex >= 0 )
+        m_Device = graphics::device::create_graphics_device(DevicePickStrategy::AdapterID, options.adapterIndex);
+    else
+        m_Device = graphics::device::create_graphics_device(DevicePickStrategy::VRAMSize);
+
     m_Window = graphics::window::create_window(m_Device, (uint64_t)hInstance, 1920, 1080, "Intel TSNC (DX12)");
     m_CmdQueue = graphics::command_queue::create_command_queue(m_Device);
     m_SwapChain = graphics::swap_chain::create_swap_chain(m_Window, m_Device, m_CmdQueue, FRAME_BUFFER_FORMAT);
@@ -80,10 +86,10 @@ void DinoRenderer::initialize(uint64_t hInstance, const CommandLineOptions& opti
     m_CameraController.move_to_poi(options.initialPOI);
 
     // Initial setup
-    m_RenderingMode = RenderingMode::GBufferDeferred;
-    m_TextureMode = TextureMode::Neural;
+    m_RenderingMode = options.renderingMode;
+    m_TextureMode = options.textureMode;
     m_DebugMode = DebugMode::TileInfo;
-    m_FilteringMode = FilteringMode::Linear;
+    m_FilteringMode = options.filteringMode;
     m_DisplayUI = true;
     m_UseCooperativeVectors = m_CooperativeVectorsSupported ? options.enableCooperative : false;
     m_EnableCounters = false;
@@ -164,7 +170,7 @@ void DinoRenderer::initialize(uint64_t hInstance, const CommandLineOptions& opti
     m_GBuffer = graphics::resources::create_graphics_buffer(m_Device, numPixels * sizeof(uint16_t) * numChannels, sizeof(uint16_t), GraphicsBufferType::Default);
 
     // Post setups
-    m_MeshRenderer.set_animation_state(options.enableAnimation);
+    m_MeshRenderer.set_animation_state(!options.disableAnimation);
 }
 
 void DinoRenderer::reload_shaders()
