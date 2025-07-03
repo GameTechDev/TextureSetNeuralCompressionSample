@@ -44,11 +44,14 @@ The sample executable is called `dino_danger`. You can run it from the **Microso
 You can also get more info about the command line options by running:
 
     dino_danger.exe --help
-    --data-dir Location of the resource folders.
-    --adapter-id Integer that allows to pick the desired GPU.
-    --poi Integer that allows to pick the initial camera location.
-    --disable-coop Disable cooperative vector usage at launch.
-    --enable-animation Enable mesh animation at launch.
+        --data-dir Location of the resource folders.
+        --adapter-id Integer that allows to pick the desired GPU [-1 = Largest VRAM, >= 0 System adapter ID].
+        --poi Integer that allows to pick the initial camera location.
+        --disable-coop Disable cooperative vector usage at launch.
+        --disable-animation Disable mesh animation at launch.
+        --rendering-mode Pick the rendering mode [0 = Material, 1 = GBuffer, 2 = Debug].
+        --texture-mode Pick the texture mode [0 = Uncompressed, 1 = BC6, 2 = Neural].
+        --filtering-mode Pick the filtering mode [0 = Nearest, 1 = Linear, 2 = Anisotropic].
 
 ## License
 Intel® Texture Set Neural Compression Sample is licensed under the [MIT License](LICENSE).

@@ -10,7 +10,12 @@
 // SDK includes
 #include "math/types.h"
 
+#pragma region int
+	int clamp(int v, int minV, int maxV);
+#pragma endregion
+
 #pragma region float
+	float clamp(float v, float minV, float maxV);
 	float min3(float v0, float v1, float v2);
 	float max3(float v0, float v1, float v2);
 	float lerp(const float& v0, const float& v1, float f);

@@ -18,11 +18,24 @@ OT sign(IT value) {
     return 0;
 }
 
+#pragma region int
+    int clamp(int v, int minV, int maxV)
+    {
+        return std::min(std::max(v, minV), maxV);
+    }
+#pragma endregion
+
 #pragma region float
+    float clamp(float v, float minV, float maxV)
+    {
+        return std::min(std::max(v, minV), maxV);
+    }
+
     float max3(float v0, float v1, float v2)
     {
         return std::max({ v0, v1, v2 });
     }
+
     float min3(float v0, float v1, float v2)
     {
         return std::min({ v0, v1, v2 });
