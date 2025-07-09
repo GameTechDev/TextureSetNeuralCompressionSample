@@ -13,7 +13,8 @@ You can find some additional informations [here](https://community.intel.com/t5/
 * A GPU that supports DirectX 12 Cooperative Vectors, such as:
   * Intel® Graphics LunarLake (or newer)
   * Intel® Arc B-Series Graphics Cards (or newer)
-* A [driver](https://www.intel.com/content/www/us/en/download/737144/855958/) that supports DirectX 12 Cooperative Vectors (or newer)
+* A [driver](https://www.intel.com/content/www/us/en/download/785597) that supports DirectX 12 Cooperative Vectors (or newer)
+* Enable [Windows Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development)
 * Compiler with C++20 support
   * [Microsoft Visual Studio 2022](https://www.visualstudio.com/) or newer
 * [CMake 3.8](https://cmake.org/) or newer
